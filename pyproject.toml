@@ -1,6 +1,6 @@
 [project]
 name = "celery-sqlalchemy-v2-scheduler"
-version = "0.1.1"
+version = "0.1.2"
 description = "Celery beat scheduler using SQLAlchemy, patched for SQLAlchemy 2.x"
 authors = [{ name="haiconmeo", email="haiconmeo54@gmail.com" }]
 readme = "README.md"

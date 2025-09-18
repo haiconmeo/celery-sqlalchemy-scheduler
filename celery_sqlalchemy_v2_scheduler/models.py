@@ -118,8 +118,9 @@ class CrontabSchedule(ModelBase, ModelMixin):
             'month_of_year': schedule._orig_month_of_year,
         }
         if schedule.tz:
+            tz = schedule.tz
             spec.update({
-                'timezone': schedule.tz.zone
+                "timezone": getattr(tz, "zone", str(tz))
             })
         stmt = select(cls).filter_by(**spec)
         model = session.execute(stmt).scalar_one_or_none()
