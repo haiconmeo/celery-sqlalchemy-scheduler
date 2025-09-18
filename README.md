@@ -1,262 +1,147 @@
-# celery-sqlalchemy-scheduler
+# Celery SQLAlchemy V2 Scheduler
 
-A Scheduler Based Sqlalchemy for Celery.
+A Celery Beat scheduler that stores the schedule in a database via SQLAlchemy.
 
-> NOTE: At first I developed this project for flask with celery to change scheduler from database, like [django-celery-beat](https://github.com/celery/django-celery-beat) for django. And now I maybe haven't time to develop for new feature. No new feature develop plan for it. Just fix bugs. If someone found some bugs, welcome to issue or PR. Thank you for your attention.
+This scheduler allows you to store periodic task schedules in a database, enabling you to add, edit, and remove tasks dynamically without restarting the Celery beat service.
 
-## Getting Started
+[![PyPI version](https://img.shields.io/pypi/v/celery-sqlalchemy-v2-scheduler.svg)](https://pypi.python.org/pypi/celery-sqlalchemy-v2-scheduler)
+[![Build Status](https://img.shields.io/travis/your-repo/celery-sqlalchemy-v2-scheduler.svg)](https://travis-ci.org/your-repo/celery-sqlalchemy-v2-scheduler)
 
-[English](/README.md) [中文文档](/README-zh.md)
+---
 
-### Prerequisites
+## Features
 
-- Python 3
-- celery >= 4.2
-- sqlalchemy
+*   **Dynamic Schedule Management**: Add, edit, and disable tasks on the fly by manipulating the database.
+*   **SQLAlchemy Backend**: Works with any database supported by SQLAlchemy (e.g., PostgreSQL, MySQL, SQLite).
+*   **Full-Featured Schedules**: Natively supports `interval`, `crontab`, and `solar` schedules.
+*   **Timezone-Aware Crontabs**: Define cron jobs that run in specific timezones.
+*   **Declarative Setup**: Define an initial schedule directly in your Celery configuration, which will be synchronized to the database on startup.
 
-First you must install `celery` and `sqlalchemy`, and `celery` should be >=4.2.0.
+## Installation
 
-```
-$ pip install sqlalchemy celery
-```
+Install the package from PyPI:
 
-### Installing
-
-Install from PyPi:
-
-```
-$ pip install celery-sqlalchemy-scheduler
+```bash
+pip install celery-sqlalchemy-v2-scheduler
 ```
 
-Install from source by cloning this repository:
+## Setup
 
-```
-$ git clone git@github.com:AngelLiang/celery-sqlalchemy-scheduler.git
-$ cd celery-sqlalchemy-scheduler
-$ python setup.py install
+To use this scheduler, you need to set the beat_scheduler and beat_dburi in your Celery application configuration. The scheduler will automatically create the necessary tables in your database when it first starts.
+
+```python
+# in your_app/celery.py
+
+from celery import Celery
+from celery.schedules import crontab
+
+app = Celery('your_app')
+
+# Configure the scheduler
+app.conf.beat_scheduler = 'celery_sqlalchemy_v2_scheduler.schedulers.DatabaseScheduler'
+
+# The database URI for the scheduler.
+# This can be any database supported by SQLAlchemy.
+app.conf.beat_dburi = 'sqlite:///schedule.db'
+
+# (Optional) Define a static schedule in your config.
+# These tasks will be added to the database when the scheduler starts.
+# This is useful for defining a default set of tasks.
+app.conf.beat_schedule = {
+    'cleanup-every-morning': {
+        'task': 'your_app.tasks.backend_cleanup',
+        'schedule': crontab(hour=4, minute=0),
+    },
+    'add-every-30-seconds': {
+        'task': 'your_app.tasks.add',
+        'schedule': 30.0,
+        'args': (16, 16)
+    },
+}
+
+# Load task modules
+app.autodiscover_tasks(['your_app.tasks'])
 ```
 
 ## Usage
 
-After you have installed `celery_sqlalchemy_scheduler`, you can easily start with following steps:
+### Running Celery Beat
 
-This is a demo for exmaple, you can check the code in `examples` directory
+Start the beat service. If you have configured the scheduler in your Celery app as shown above, you don't need to specify it on the command line.
 
-1. start celery worker
+```bash
+celery -A your_app beat -l info
+```
 
-   ```
-   $ celery worker -A tasks -l info
-   ```
+The scheduler will connect to the database specified in beat_dburi and create the necessary tables if they don't exist.
 
-2. start the celery beat with `DatabaseScheduler` as scheduler:
+### Managing Tasks Programmatically
 
-   ```
-   $ celery beat -A tasks -S celery_sqlalchemy_scheduler.schedulers:DatabaseScheduler -l info
-   ```
+You can add, modify, or delete tasks by directly interacting with the SQLAlchemy models. This is the primary benefit of using a database-backed scheduler.
 
-## Description
+Here's an example of how to add a new periodic task that runs every 10 seconds.
 
-After the celery beat is started, by default it create a sqlite database(`schedule.db`) in current folder. You can use `SQLiteStudio.exe` to inspect it.
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from celery.schedules import schedule
 
-![sqlite](screenshot/sqlite.png)
+from celery_sqlalchemy_v2_scheduler.session import SessionManager
+from celery_sqlalchemy_v2_scheduler.models import PeriodicTask, IntervalSchedule
 
-When you want to update scheduler, you can update the data in `schedule.db`. But `celery_sqlalchemy_scheduler` don't update the scheduler immediately. Then you shoule be change the first column's `last_update` field in the `celery_periodic_task_changed` to now datetime. Finally the celery beat will update scheduler at next wake-up time.
+# 1. Setup the database session
+db_uri = 'sqlite:///schedule.db'
+session_manager = SessionManager()
+engine, Session = session_manager.create_session(db_uri)
+session = Session()
 
-### Database Configuration
+# 2. Create an interval schedule
+# The scheduler will look for an existing schedule with the same properties
+# or create a new one if it doesn't exist.
+interval = IntervalSchedule.from_schedule(session, schedule(run_every=10.0))
+session.flush() # Ensure the interval gets an ID
 
-You can configure sqlalchemy db uri when you configure the celery, example as:
-
-```Python
-from celery import Celery
-
-celery = Celery('tasks')
-
-beat_dburi = 'sqlite:///schedule.db'
-
-celery.conf.update(
-    {'beat_dburi': beat_dburi}
+# 3. Create the periodic task
+task = PeriodicTask(
+    name='My Programmatic Task',
+    task='your_app.tasks.some_task',
+    interval=interval,
+    args='[1, 2]',
+    kwargs='{"foo": "bar"}',
+    enabled=True
 )
+
+session.add(task)
+session.commit()
+
+print(f"Task '{task.name}' with id {task.id} created.")
+
+session.close()
 ```
 
-Also, you can use MySQL or PostgreSQL.
+### Disabling a Task
 
-```Python
-# MySQL: `pip install mysql-connector`
-beat_dburi = 'mysql+mysqlconnector://root:root@127.0.0.1:3306/celery-schedule'
-
-# PostgreSQL: `pip install psycopg2`
-beat_dburi = 'postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/celery-schedule'
-```
-
-## Example Code 1
-
-View `examples/base/tasks.py` for details.
-
-How to quickstart: https://github.com/AngelLiang/celery-sqlalchemy-scheduler/issues/15#issuecomment-625624088
-
-Run Worker in console 1
-
-    $ pipenv shell
-    $ cd examples/base
-
-    # Celery < 5.0
-    $ celery worker -A tasks:celery -l info
-
-    # Celery >= 5.0
-    $ celery -A tasks:celery worker -l info
-
-Run Beat in console 2
-
-    $ pipenv shell
-    $ cd examples/base
-
-    # Celery < 5.0
-    $ celery beat -A tasks:celery -S tasks:DatabaseScheduler -l info
-
-    # Celery >= 5.0
-    $ celery -A tasks:celery beat -S tasks:DatabaseScheduler -l info
-
-## Example Code 2
-
-### Example creating interval-based periodic task
-
-To create a periodic task executing at an interval you must first
-create the interval object:
+To disable a task, simply query it and set its enabled flag to False. The beat service will automatically detect the change and stop scheduling the task.
 
 ```python
->>> from celery_sqlalchemy_scheduler.models import PeriodicTask, IntervalSchedule
->>> from celery_sqlalchemy_scheduler.session import SessionManager
->>> from celeryconfig import beat_dburi
->>> session_manager = SessionManager()
->>> engine, Session = session_manager.create_session(beat_dburi)
->>> session = Session()
+# ... (session setup from previous example) ...
 
-# executes every 10 seconds.
->>> schedule = session.query(IntervalSchedule).filter_by(every=10, period=IntervalSchedule.SECONDS).first()
->>> if not schedule:
-...     schedule = IntervalSchedule(every=10, period=IntervalSchedule.SECONDS)
-...     session.add(schedule)
-...     session.commit()
+task_to_disable = session.query(PeriodicTask).filter_by(name='My Programmatic Task').first()
+
+if task_to_disable:
+    task_to_disable.enabled = False
+    session.commit()
+    print(f"Task '{task_to_disable.name}' has been disabled.")
+
+session.close()
 ```
 
-That's all the fields you need: a period type and the frequency.
+## Database Models
 
-You can choose between a specific set of periods:
+The scheduler uses the following core models:
 
-- `IntervalSchedule.DAYS`
-- `IntervalSchedule.HOURS`
-- `IntervalSchedule.MINUTES`
-- `IntervalSchedule.SECONDS`
-- `IntervalSchedule.MICROSECONDS`
-
-_note_:
-
-    If you have multiple periodic tasks executing every 10 seconds,
-    then they should all point to the same schedule object.
-
-Now that we have defined the schedule object, we can create the periodic task
-entry:
-
-```python
-    >>> task = PeriodicTask(
-    ...     interval=schedule,                  # we created this above.
-    ...     name='Importing contacts',          # simply describes this periodic task.
-    ...     task='proj.tasks.import_contacts',  # name of task.
-    ... )
-    >>> session.add(task)
-    >>> session.commit()
-```
-
-Note that this is a very basic example, you can also specify the
-arguments and keyword arguments used to execute the task, the `queue` to
-send it to[\*], and set an expiry time.
-
-Here\'s an example specifying the arguments, note how JSON serialization
-is required:
-
-    >>> import json
-    >>> from datetime import datetime, timedelta
-
-    >>> periodic_task = PeriodicTask(
-    ...     interval=schedule,                  # we created this above.
-    ...     name='Importing contacts',          # simply describes this periodic task.
-    ...     task='proj.tasks.import_contacts',  # name of task.
-    ...     args=json.dumps(['arg1', 'arg2']),
-    ...     kwargs=json.dumps({
-    ...        'be_careful': True,
-    ...     }),
-    ...     expires=datetime.utcnow() + timedelta(seconds=30)
-    ... )
-    ... session.add(periodic_task)
-    ... session.commit()
-
-### Example creating crontab-based periodic task
-
-A crontab schedule has the fields: `minute`, `hour`, `day_of_week`,
-`day_of_month` and `month_of_year`, so if you want the equivalent of a
-`30 * * * *` (execute every 30 minutes) crontab entry you specify:
-
-    >>> from celery_sqlalchemy_scheduler.models import PeriodicTask, CrontabSchedule
-    >>> schedule = CrontabSchedule(
-    ...     minute='30',
-    ...     hour='*',
-    ...     day_of_week='*',
-    ...     day_of_month='*',
-    ...     month_of_year='*',
-    ...     timezone='UTC',
-    ... )
-
-The crontab schedule is linked to a specific timezone using the
-'timezone' input parameter.
-
-Then to create a periodic task using this schedule, use the same
-approach as the interval-based periodic task earlier in this document,
-but instead of `interval=schedule`, specify `crontab=schedule`:
-
-    >>> periodic_task = PeriodicTask(
-    ...     crontab=schedule,
-    ...     name='Importing contacts',
-    ...     task='proj.tasks.import_contacts',
-    ... )
-    ... session.add(periodic_task)
-    ... session.commit()
-
-### Temporarily disable a periodic task
-
-You can use the `enabled` flag to temporarily disable a periodic task:
-
-    >>> periodic_task.enabled = False
-    >>> session.add(periodic_task)
-    >>> session.commit()
-
-> Note: If you want to delete `PeriodicTask`, don't use `.delete()` method on a query
-> such as `db.session.query(PeriodicTask).filter(PeriodicTask.id == task_id).delete()`.
-> Because it doesn't trigger the `after_delete` event listener and result in Error.
-> The correct deletion method is using session to delete `PeriodicTask` object.
-
-    >>> db.session.delete(db.session.query(PeriodicTask).get(task_id))
-    >>> db.session.commit()
-
-### Example running periodic tasks
-
-The periodic tasks still need 'workers' to execute them. So make sure
-the default **Celery** package is installed. (If not installed, please
-follow the installation instructions here:
-<https://github.com/celery/celery>)
-
-Both the worker and beat services need to be running at the same time.
-
-1.  Start a Celery worker service (specify your project name):
-
-        $ celery -A [project-name] worker --loglevel=info
-
-2.  As a separate process, start the beat service (specify the
-    scheduler):
-
-        $ celery -A [project-name] beat -l info --scheduler celery_sqlalchemy_scheduler.schedulers:DatabaseScheduler
-
-## Acknowledgments
-
-- [django-celery-beat](https://github.com/celery/django-celery-beat)
-- [celerybeatredis](https://github.com/liuliqiang/celerybeatredis)
-- [celery](https://github.com/celery/celery)
+*   `PeriodicTask`: The main model representing a single periodic task. It holds the task name, arguments, execution options, and a foreign key to one of the schedule types.
+*   `IntervalSchedule`: Stores interval-based schedules (e.g., "run every 30 seconds").
+*   `CrontabSchedule`: Stores cron-style schedules (e.g., "run every day at 5 AM"). This model is timezone-aware.
+*   `SolarSchedule`: Stores schedules based on solar events like sunrise, sunset, dawn, and dusk for a given geographic location.
+*   `PeriodicTaskChanged`: A helper table used internally to efficiently detect when the schedule has been updated, prompting the scheduler to reload its tasks.

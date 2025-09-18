@@ -4,10 +4,9 @@ import datetime as dt
 import pytz
 
 import sqlalchemy as sa
-from sqlalchemy import func
+from sqlalchemy import func, select, insert, update
 from sqlalchemy.event import listen
-from sqlalchemy.orm import relationship, foreign, remote
-from sqlalchemy.sql import select, insert, update
+from sqlalchemy.orm import relationship, foreign
 
 from celery import schedules
 from celery.utils.log import get_logger
@@ -67,8 +66,8 @@ class IntervalSchedule(ModelBase, ModelMixin):
     @classmethod
     def from_schedule(cls, session, schedule, period=SECONDS):
         every = max(schedule.run_every.total_seconds(), 0)
-        model = session.query(IntervalSchedule).filter_by(
-            every=every, period=period).first()
+        stmt = select(cls).filter_by(every=every, period=period)
+        model = session.execute(stmt).scalar_one_or_none()
         if not model:
             model = cls(every=every, period=period)
             session.add(model)
@@ -122,7 +121,8 @@ class CrontabSchedule(ModelBase, ModelMixin):
             spec.update({
                 'timezone': schedule.tz.zone
             })
-        model = session.query(CrontabSchedule).filter_by(**spec).first()
+        stmt = select(cls).filter_by(**spec)
+        model = session.execute(stmt).scalar_one_or_none()
         if not model:
             model = cls(**spec)
             session.add(model)
@@ -156,7 +156,8 @@ class SolarSchedule(ModelBase, ModelMixin):
             'latitude': schedule.lat,
             'longitude': schedule.lon
         }
-        model = session.query(SolarSchedule).filter_by(**spec).first()
+        stmt = select(cls).filter_by(**spec)
+        model = session.execute(stmt).scalar_one_or_none()
         if not model:
             model = cls(**spec)
             session.add(model)
@@ -178,7 +179,7 @@ class PeriodicTaskChanged(ModelBase, ModelMixin):
 
     id = sa.Column(sa.Integer, primary_key=True)
     last_update = sa.Column(
-        sa.DateTime(timezone=True), nullable=False, default=dt.datetime.now)
+        sa.DateTime(timezone=True), nullable=False, default=func.now())
 
     @classmethod
     def changed(cls, mapper, connection, target):
@@ -197,21 +198,19 @@ class PeriodicTaskChanged(ModelBase, ModelMixin):
         :param connection: the Connection being used
         :param target: the mapped instance being persisted
         """
-        s = connection.execute(select([PeriodicTaskChanged]).
-                               where(PeriodicTaskChanged.id == 1).limit(1))
-        if not s:
-            s = connection.execute(insert(PeriodicTaskChanged),
-                                   last_update=dt.datetime.now())
-        else:
-            s = connection.execute(update(PeriodicTaskChanged).
-                                   where(PeriodicTaskChanged.id == 1).
-                                   values(last_update=dt.datetime.now()))
+        stmt = update(PeriodicTaskChanged).where(PeriodicTaskChanged.id == 1).values(last_update=func.now())
+        result = connection.execute(stmt)
+
+        if result.rowcount == 0:
+            # The row probably did not exist, so we insert it.
+            insert_stmt = insert(PeriodicTaskChanged).values(id=1, last_update=func.now())
+            connection.execute(insert_stmt)
 
     @classmethod
     def last_change(cls, session):
-        periodic_tasks = session.query(PeriodicTaskChanged).get(1)
-        if periodic_tasks:
-            return periodic_tasks.last_update
+        task = session.get(PeriodicTaskChanged, 1)
+        if task:
+            return task.last_update
 
 
 class PeriodicTask(ModelBase, ModelMixin):
@@ -230,21 +229,21 @@ class PeriodicTask(ModelBase, ModelMixin):
     interval = relationship(
         IntervalSchedule,
         uselist=False,
-        primaryjoin=foreign(interval_id) == remote(IntervalSchedule.id)
+        primaryjoin=interval_id == foreign(IntervalSchedule.id)
     )
 
     crontab_id = sa.Column(sa.Integer)
     crontab = relationship(
         CrontabSchedule,
         uselist=False,
-        primaryjoin=foreign(crontab_id) == remote(CrontabSchedule.id)
+        primaryjoin=crontab_id == foreign(CrontabSchedule.id)
     )
 
     solar_id = sa.Column(sa.Integer)
     solar = relationship(
         SolarSchedule,
         uselist=False,
-        primaryjoin=foreign(solar_id) == remote(SolarSchedule.id)
+        primaryjoin=solar_id == foreign(SolarSchedule.id)
     )
 
     args = sa.Column(sa.Text(), default='[]')

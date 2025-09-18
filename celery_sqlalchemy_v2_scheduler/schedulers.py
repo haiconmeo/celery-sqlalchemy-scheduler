@@ -3,6 +3,7 @@
 import logging
 import datetime as dt
 from multiprocessing.util import Finalize
+from sqlalchemy import select
 
 import sqlalchemy
 from celery import current_app
@@ -117,11 +118,6 @@ class ModelEntry(ScheduleEntry):
                 session.add(model)
                 session.commit()
 
-            #     obj = session.query(PeriodicTask).get(model.id)
-            #     obj.enable = model.enabled
-            #     session.add(obj)
-            #     session.commit()
-
     def is_due(self):
         if not self.model.enabled:
             # 5 second delay for re-enable.
@@ -176,7 +172,7 @@ class ModelEntry(ScheduleEntry):
         with session_cleanup(session):
             # Object may not be synchronized, so only
             # change the fields we care about.
-            obj = session.query(PeriodicTask).get(self.model.id)
+            obj = session.get(PeriodicTask, self.model.id)
 
             for field in self.save_fields:
                 setattr(obj, field, getattr(self.model, field))
@@ -210,8 +206,8 @@ class ModelEntry(ScheduleEntry):
         """
         session = Session()
         with session_cleanup(session):
-            periodic_task = session.query(
-                PeriodicTask).filter_by(name=name).first()
+            stmt = select(PeriodicTask).filter_by(name=name)
+            periodic_task = session.execute(stmt).scalar_one_or_none()
             if not periodic_task:
                 periodic_task = PeriodicTask(name=name)
             temp = cls._unpack_fields(session, **entry)
@@ -315,8 +311,8 @@ class DatabaseScheduler(Scheduler):
         session = self.Session()
         with session_cleanup(session):
             logger.debug('DatabaseScheduler: Fetching database schedule')
-            # get all enabled PeriodicTask
-            models = session.query(self.Model).filter_by(enabled=True).all()
+            stmt = select(self.Model).filter_by(enabled=True)
+            models = session.execute(stmt).scalars().all()
             s = {}
             for model in models:
                 try:
@@ -331,7 +327,7 @@ class DatabaseScheduler(Scheduler):
     def schedule_changed(self):
         session = self.Session()
         with session_cleanup(session):
-            changes = session.query(self.Changes).get(1)
+            changes = session.get(self.Changes, 1)
             if not changes:
                 changes = self.Changes(id=1)
                 session.add(changes)
